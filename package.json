@@ -1,0 +1,7 @@
+{
+  "name": "turbo-kart-racing",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Mario Kart style 3D kart racing game (Three.js)"
+}

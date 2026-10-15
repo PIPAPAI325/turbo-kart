@@ -1,0 +1,19 @@
+# 便携 Node.js 工具链（约 35MB，不入库）
+tools/node/
+tools/*.zip
+
+# 临时邮箱凭据（mail.tm 一次性账号）
+tools/mail.json
+
+# 构建产物（由 tools/build_single.py 生成）
+dist/
+kart_site.zip
+
+# Python
+__pycache__/
+*.pyc
+
+# 系统/编辑器
+Thumbs.db
+.DS_Store
+.vscode/
