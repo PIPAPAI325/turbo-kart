@@ -30,10 +30,16 @@ const DRAG_QUAD = 0.010;        // 滑行阻力速度平方项系数
 
 const TURN_RATE = 2.3;          // 基础转向角速率 rad/s
 const DRIFT_TURN_MUL = 1.45;    // 漂移期间转向角速率倍率
-const DRIFT_SLIP = 0.32;        // 漂移侧滑角 rad（运动方向相对车头的偏转）
+const DRIFT_SELF_YAW = 0.7;     // 漂移期间沿漂移方向的额外自转角速率 rad/s（反打可收）
+const DRIFT_SLIP_MAX = 0.42;    // 漂移侧滑角上限 rad（运动方向相对车头的偏转）
+const DRIFT_SLIP_BASE = 0.45;   // 侧滑角低速占比（越小则侧滑越随速度增长）
+const DRIFT_SLIP_EASE_IN = 7;   // 入漂时侧滑角逼近目标的速率 1/s（缓动，避免瞬间甩尾）
+const DRIFT_SLIP_EASE_OUT = 5.5;// 出漂时侧滑角回正的速率 1/s
+const DRIFT_SCRUB = 0.09;       // 漂移擦速系数 1/s（漂移掉速代价，由迷你涡轮补偿）
 const DRIFT_ENTER_STEER = 0.25; // 进入漂移所需最小 |steer|
 const DRIFT_ENTER_SPEED = 16;   // 进入漂移所需最低速度 u/s
-const DRIFT_EXIT_SPEED = 12;    // 低于此速度强制退出漂移（滞回，防抖动）
+const DRIFT_EXIT_SPEED = 12;    // 低于此速度开始计时退出漂移（滞回，防抖动）
+const DRIFT_EXIT_GRACE = 0.3;   // 低于退出速度后的宽限时长 s（短暂掉速不打断蓄力）
 const MINI_TURBO_LV1 = 1.2;     // 一档迷你涡轮蓄力阈值 s
 const MINI_TURBO_LV2 = 2.4;     // 二档蓄力阈值 s
 const MINI_TURBO_LV1_T = 1.0;   // 一档涡轮时长 s
@@ -101,51 +107,85 @@ function stepSpeed(state, throttle, dt) {
   }
 }
 
+/** 结束漂移并结算迷你涡轮（按蓄力时长定档） */
+function endDrift(state) {
+  if (state.driftCharge > MINI_TURBO_LV2) {
+    state.boostTime = Math.max(state.boostTime, MINI_TURBO_LV2_T);
+  } else if (state.driftCharge > MINI_TURBO_LV1) {
+    state.boostTime = Math.max(state.boostTime, MINI_TURBO_LV1_T);
+  }
+  state.drifting = false;
+  state.driftDir = 0;
+  state.driftCharge = 0;
+  state.driftGrace = 0;
+}
+
 /**
  * 漂移状态机：
  * 进入：按住漂移 + |steer|>0.25 + 速度>16，锁定 driftDir；
- * 期间 driftCharge 按 dt 累积；
- * 退出（松键或速度过低）：按蓄力时长结算迷你涡轮。
+ * 期间 driftCharge 按 dt 累积，并按系数擦掉一点速度（漂移的代价）；
+ * 退出：主动松键立即结算；速度低于 12 时先进入宽限窗口，
+ *       持续 DRIFT_EXIT_GRACE 秒才结算（短暂掉速/蹭墙不打断蓄力）。
  */
 function stepDrift(state, drift, steer, dt) {
   if (state.drifting) {
     state.driftCharge += dt;
-    if (!drift || state.speed < DRIFT_EXIT_SPEED) {
-      if (state.driftCharge > MINI_TURBO_LV2) {
-        state.boostTime = Math.max(state.boostTime, MINI_TURBO_LV2_T);
-      } else if (state.driftCharge > MINI_TURBO_LV1) {
-        state.boostTime = Math.max(state.boostTime, MINI_TURBO_LV1_T);
-      }
-      state.drifting = false;
-      state.driftDir = 0;
-      state.driftCharge = 0;
-    }
+    // 漂移擦速：按比例小幅掉速，换取迷你涡轮（有取舍才有技巧）
+    if (state.speed > 0) state.speed = Math.max(0, state.speed * (1 - DRIFT_SCRUB * dt));
+    // 速度滞回：短时间低于退出速度计入宽限，恢复即清零
+    if (Math.abs(state.speed) < DRIFT_EXIT_SPEED) state.driftGrace += dt;
+    else state.driftGrace = 0;
+    if (!drift || state.driftGrace > DRIFT_EXIT_GRACE) endDrift(state);
   } else if (drift && Math.abs(steer) > DRIFT_ENTER_STEER && state.speed > DRIFT_ENTER_SPEED) {
     state.drifting = true;
     state.driftDir = Math.sign(steer);
     state.driftCharge = 0;
+    state.driftGrace = 0;
+  } else {
+    state.driftGrace = 0;
   }
 }
 
 /**
  * 转向：yawRate = steer * 2.3 * speedFactor。
  * speedFactor 让低速转不动、高速转弯半径变大；倒车时转向反向；
- * 漂移期间角速率 ×1.45。
+ * 漂移期间角速率 ×1.45，并叠加沿 driftDir 的自转：
+ * 同向打舵更收紧、反打（align<0）可收敛，避免“铁轨锁死”的手感。
  */
 function stepSteer(state, steer, dt) {
   const spd = Math.abs(state.speed);
   const speedFactor = clamp(spd / 10, 0, 1) / (1 + 0.55 * spd / MAX_SPEED);
   let yawRate = steer * TURN_RATE * speedFactor;
-  if (state.drifting) yawRate *= DRIFT_TURN_MUL;
+  if (state.drifting) {
+    const align = clamp(steer * state.driftDir, -1, 1); // +1 同向收紧 / -1 反打放漂
+    yawRate = yawRate * DRIFT_TURN_MUL
+      + state.driftDir * DRIFT_SELF_YAW * speedFactor * (0.5 + 0.5 * align);
+  }
   if (state.speed < 0) yawRate = -yawRate; // 倒车转向反向
   state.heading += yawRate * dt;
 }
 
-/** 位移：非漂移时车头与运动方向一致（街机抓地）；漂移时叠加侧滑角。 */
+/**
+ * 位移：运动方向 = 车头 + 侧滑角。
+ * 侧滑角不瞬变：目标值随速度和打舵力度变化，入漂/出漂都按速率缓动逼近，
+ * 因此甩尾与回正都是渐进的；非漂移时缓慢归零，避免突兀的抓地跳变。
+ */
 function stepMove(state, dt) {
-  const moveAngle = state.drifting
-    ? state.heading + state.driftDir * DRIFT_SLIP
-    : state.heading;
+  let targetSlip = 0;
+  if (state.drifting) {
+    const spd = Math.abs(state.speed);
+    const sf = clamp(spd / MAX_SPEED, 0, 1);                    // 越快侧滑越大
+    const align = clamp(state.steer * state.driftDir, -1, 1);   // 同向收紧 / 反打放漂
+    const steerFactor = clamp(0.55 + 0.45 * align, 0.2, 1);
+    targetSlip = state.driftDir * DRIFT_SLIP_MAX
+      * (DRIFT_SLIP_BASE + (1 - DRIFT_SLIP_BASE) * sf)
+      * steerFactor;
+  }
+  const k = state.drifting ? DRIFT_SLIP_EASE_IN : DRIFT_SLIP_EASE_OUT;
+  state.slip += (targetSlip - state.slip) * Math.min(1, k * dt);
+  if (!state.drifting && Math.abs(state.slip) < 1e-4) state.slip = 0;
+
+  const moveAngle = state.heading + state.slip;
   state.x += Math.sin(moveAngle) * state.speed * dt;
   state.z += Math.cos(moveAngle) * state.speed * dt;
 }
@@ -218,6 +258,8 @@ export function createKartState(grid) {
     finished: false,
     // —— 内部字段 ——
     wallSlide: 0,
+    slip: 0,       // 当前平滑后的侧滑角 rad（运动方向相对车头的偏转）
+    driftGrace: 0, // 速度低于退出阈值后的宽限计时 s（滞回用）
     sample: { index: s.index, t: s.t, lateral: s.lateral },
   };
 }

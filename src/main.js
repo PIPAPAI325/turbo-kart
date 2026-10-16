@@ -5,7 +5,8 @@
 // ============================================================
 import * as THREE from 'three';
 import {
-  ROSTER, TOTAL_LAPS, TRACK_POINTS, sampleAt, nearest, getStartGrid, TRACK_LENGTH,
+  ROSTER, TOTAL_LAPS, TRACK_POINTS, TRACKS, sampleAt, nearest, getStartGrid,
+  setTrack, TRACK_LENGTH,
 } from './track-data.js';
 import {
   createKartState, updateKartPhysics, resolveKartKartCollisions,
@@ -19,6 +20,7 @@ import { GameAudio } from './audio.js';
 const $ = (id) => document.getElementById(id);
 const el = {
   loading: $('loading'), menu: $('menu'), colorRow: $('colorRow'), diffRow: $('diffRow'),
+  trackRow: $('trackRow'),
   startBtn: $('startBtn'), hud: $('hud'), posVal: $('posVal'), posSuffix: $('posSuffix'),
   lapVal: $('lapVal'), timeVal: $('timeVal'), bestLapVal: $('bestLapVal'),
   speedVal: $('speedVal'), boostFill: $('boostFill'), minimap: $('minimap'),
@@ -58,6 +60,7 @@ const audio = new GameAudio();
 let mode = 'menu';          // menu | countdown | race | finished
 let paused = false;
 let difficulty = 1;
+let trackIndex = 0;
 let playerColorIdx = 0;
 let raceTime = 0;
 let countTimer = 0;
@@ -133,6 +136,21 @@ el.diffRow.querySelectorAll('.diff-btn').forEach((b) => {
     audio.start(); audio.beep(880, 0.08, 'square', 0.15);
   };
 });
+// 地图选择（沿用难度按钮样式）；切换即时重建场景与缩略图
+TRACKS.forEach((t, i) => {
+  const b = document.createElement('button');
+  b.className = 'diff-btn' + (i === 0 ? ' sel' : '');
+  b.textContent = t.name;
+  b.onclick = () => {
+    trackIndex = i;
+    el.trackRow.querySelectorAll('.diff-btn').forEach((x, j) => x.classList.toggle('sel', j === i));
+    setTrack(trackIndex);
+    world.rebuildTrack();
+    rebuildMinimap();
+    audio.start(); audio.beep(880, 0.08, 'square', 0.15);
+  };
+  el.trackRow.appendChild(b);
+});
 el.startBtn.onclick = () => { audio.start(); audio.beep(660, 0.1); startRace(); };
 el.againBtn.onclick = () => { el.results.classList.add('hidden'); startRace(); };
 el.restartBtn.onclick = () => { el.pause.classList.add('hidden'); paused = false; startRace(); };
@@ -195,6 +213,10 @@ function resetRaceState() {
 }
 
 function startRace() {
+  // 应用所选地图：必须在排位 (getStartGrid) 计算之前完成
+  setTrack(trackIndex);
+  world.rebuildTrack();
+  rebuildMinimap();
   buildKarts();
   // AI 车手每局重建（内部计时器/难度归零）
   karts.forEach((k, i) => { if (i > 0) k.driver = createAIDriver(i, difficulty); });
@@ -295,7 +317,8 @@ function updateMenuCam(dt) {
 // ---------------- HUD / 小地图 ----------------
 const mmCtx = el.minimap.getContext('2d');
 let mmPath = null, mmScale = 1, mmOffX = 0, mmOffY = 0;
-(function buildMinimap() {
+// 依据当前 TRACK_POINTS 包围盒重建缩略图路径与缩放/偏移（换图后需重调）
+function rebuildMinimap() {
   let minX = 1e9, maxX = -1e9, minZ = 1e9, maxZ = -1e9;
   for (const p of TRACK_POINTS) {
     minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
@@ -311,7 +334,8 @@ let mmPath = null, mmScale = 1, mmOffX = 0, mmOffY = 0;
     i === 0 ? mmPath.moveTo(x, y) : mmPath.lineTo(x, y);
   });
   mmPath.closePath();
-})();
+}
+rebuildMinimap();
 const mmPt = (x, z) => [x * mmScale + mmOffX, z * mmScale + mmOffY];
 
 function drawMinimap() {

@@ -184,175 +184,202 @@ export function createWorld(scene, renderer) {
     scene.add(m);
   }
 
-  // ---------- 赛道丝带 ----------
-  const N = SAMPLE_COUNT;
-  const SEG_LEN = TRACK_LENGTH / N;
+  // ============================================================
+  // 赛道相关几何（随地图变化）：全部挂在 trackGroup 下，
+  // rebuildTrack() 整体销毁重建，其余场景内容只创建一次。
+  // ============================================================
+  const trackGroup = new THREE.Group();
+  scene.add(trackGroup);
 
-  // 沥青路面
-  const asphalt = new THREE.Mesh(
-    buildRibbon(0, N, { lat: -ROAD_HALF, h: 0.02 }, { lat: ROAD_HALF, h: 0.02 }),
-    new THREE.MeshLambertMaterial({ color: 0x43484f }),
-  );
-  asphalt.receiveShadow = true;
-  scene.add(asphalt);
-
-  // 红白路肩（左右）
-  const curbMat = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide });
-  const curbColor = (i) => (Math.floor(i / 6) % 2
-    ? new THREE.Color(0xe23b3b) : new THREE.Color(0xf4f6f8));
-  for (const s of [1, -1]) {
-    const curb = new THREE.Mesh(
-      buildRibbon(0, N,
-        { lat: s * ROAD_HALF, h: 0.03 }, { lat: s * WALL_HALF, h: 0.045 },
-        { colorFn: curbColor }),
-      curbMat,
-    );
-    curb.receiveShadow = true;
-    scene.add(curb);
-  }
-
-  // 白色边线
-  const lineMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-  for (const s of [1, -1]) {
-    scene.add(new THREE.Mesh(
-      buildRibbon(0, N,
-        { lat: s * (ROAD_HALF - 0.55), h: 0.035 },
-        { lat: s * (ROAD_HALF - 0.18), h: 0.035 }),
-      lineMat,
-    ));
-  }
-
-  // 中央虚线
-  scene.add(new THREE.Mesh(
-    buildDashes({ lat: -0.2, h: 0.035 }, { lat: 0.2, h: 0.035 }, 12, 0.5),
-    lineMat,
-  ));
-
-  // ---------- 护栏（白色墙身 + 红色顶栏） ----------
-  const wallMat = new THREE.MeshLambertMaterial({ color: 0xeef2f7, side: THREE.DoubleSide });
-  const railMat = new THREE.MeshLambertMaterial({ color: 0xd7263d, side: THREE.DoubleSide });
-  for (const s of [1, -1]) {
-    const wall = new THREE.Mesh(
-      buildRibbon(0, N, { lat: s * WALL_HALF, h: 0 }, { lat: s * WALL_HALF, h: 1.0 }),
-      wallMat,
-    );
-    wall.castShadow = true;
-    wall.receiveShadow = true;
-    scene.add(wall);
-    scene.add(new THREE.Mesh(
-      buildRibbon(0, N,
-        { lat: s * WALL_HALF, h: 1.0 }, { lat: s * (WALL_HALF + 0.4), h: 1.0 }),
-      railMat,
-    ));
-    // 支柱
-    const postGeo = new THREE.BoxGeometry(0.22, 1.15, 0.22);
-    const postMat = new THREE.MeshLambertMaterial({ color: 0x9aa3ad });
-    for (let i = 0; i < N; i += 15) {
-      const p = TRACK_POINTS[i], n = TRACK_NORMALS[i];
-      const post = new THREE.Mesh(postGeo, postMat);
-      post.position.set(p.x + n.x * s * WALL_HALF, 0.55, p.z + n.z * s * WALL_HALF);
-      post.castShadow = true;
-      scene.add(post);
-    }
-  }
-
-  // ---------- 加速带 ----------
+  // Canvas 贴图与地图无关（风格恒定），只创建一次；
+  // 其中 chevronTex 还被每帧 update() 引用，故不随重建销毁。
   const chevronTex = makeChevronTexture();
   chevronTex.wrapS = chevronTex.wrapT = THREE.RepeatWrapping;
-  const padMat = new THREE.MeshBasicMaterial({ map: chevronTex, side: THREE.DoubleSide });
-  for (const padT of BOOST_PADS) {
-    const count = Math.max(2, Math.round(2 * BOOST_PAD_HALF_T * N));
-    const iStart = Math.round((padT - BOOST_PAD_HALF_T) * N);
-    const arcLen = 2 * BOOST_PAD_HALF_T * TRACK_LENGTH;
-    const pad = new THREE.Mesh(
-      buildRibbon(iStart, count,
-        { lat: -BOOST_PAD_HALF_LAT, h: 0.05 }, { lat: BOOST_PAD_HALF_LAT, h: 0.05 },
-        { vScale: Math.max(1, Math.round(arcLen / 4)) }),
-      padMat,
-    );
-    scene.add(pad);
-  }
-
-  // ---------- 起点线 + 拱门 ----------
   const checkerTex = makeCheckerTexture();
-  const checker = new THREE.Mesh(
-    buildRibbon(N - 1, 2,
-      { lat: -ROAD_HALF, h: 0.045 }, { lat: ROAD_HALF, h: 0.045 }),
-    new THREE.MeshBasicMaterial({ map: checkerTex }),
-  );
-  scene.add(checker);
-
-  const startS = TRACK_POINTS[0], startN = TRACK_NORMALS[0];
-  const arch = new THREE.Group();
-  arch.position.set(startS.x, 0, startS.z);
-  arch.rotation.y = Math.atan2(-startN.z, startN.x); // 使拱门局部 +X 对齐赛道法线（横跨赛道）
-  const pillarGeo = new THREE.CylinderGeometry(0.55, 0.7, 7, 12);
-  const pillarMat = new THREE.MeshLambertMaterial({ color: 0xf4f6f8 });
-  for (const s of [1, -1]) {
-    const pillar = new THREE.Mesh(pillarGeo, pillarMat);
-    pillar.position.set(s * (WALL_HALF + 1.1), 3.5, 0);
-    pillar.castShadow = true;
-    arch.add(pillar);
-  }
   const bannerTex = makeBannerTexture();
-  const bannerMats = [
-    null, null, null, null,
-    new THREE.MeshBasicMaterial({ map: bannerTex }),
-    new THREE.MeshBasicMaterial({ map: bannerTex }),
-  ];
-  const banner = new THREE.Mesh(new THREE.BoxGeometry(2 * (WALL_HALF + 1.1), 1.9, 0.4), bannerMats);
-  banner.position.y = 7.4;
-  banner.castShadow = true;
-  arch.add(banner);
-  scene.add(arch);
 
-  // ---------- 树木（实例化） ----------
-  const treeSpots = [];
-  let attempts = 0;
-  while (treeSpots.length < 64 && attempts < 600) {
-    attempts++;
-    const x = (Math.random() * 2 - 1) * 700;
-    const z = (Math.random() * 2 - 1) * 700;
-    if (nearest(x, z, -1).dist < 15) continue;
-    treeSpots.push({ x, z, s: 0.8 + Math.random() * 1.1, rot: Math.random() * Math.PI * 2 });
+  const dummy = new THREE.Object3D();   // 树木/云朵实例化共用
+  const N = SAMPLE_COUNT;
+
+  // 销毁旧赛道组的几何/材质，避免换图累积显存泄漏
+  function disposeTrackGroup() {
+    trackGroup.traverse((o) => {
+      if (o.geometry) o.geometry.dispose();
+      if (o.material) {
+        const mats = Array.isArray(o.material) ? o.material : [o.material];
+        for (const m of mats) if (m && m.dispose) m.dispose();
+      }
+    });
+    while (trackGroup.children.length) trackGroup.remove(trackGroup.children[0]);
   }
-  const trunkMesh = new THREE.InstancedMesh(
-    new THREE.CylinderGeometry(0.16, 0.26, 1.5, 7),
-    new THREE.MeshLambertMaterial({ color: 0x7a5230 }),
-    treeSpots.length,
-  );
-  const leafMeshA = new THREE.InstancedMesh(
-    new THREE.ConeGeometry(1.6, 2.4, 8),
-    new THREE.MeshLambertMaterial({ color: 0xffffff }),
-    treeSpots.length,
-  );
-  const leafMeshB = new THREE.InstancedMesh(
-    new THREE.ConeGeometry(1.15, 2.0, 8),
-    new THREE.MeshLambertMaterial({ color: 0xffffff }),
-    treeSpots.length,
-  );
-  const dummy = new THREE.Object3D();
-  const greens = [0x2f8f3a, 0x3aa54a, 0x57b85c, 0x2a9d3f];
-  const tmpColor = new THREE.Color();
-  treeSpots.forEach((t, i) => {
-    dummy.rotation.set(0, t.rot, 0);
-    dummy.position.set(t.x, 0.75 * t.s, t.z);
-    dummy.scale.setScalar(t.s);
-    dummy.updateMatrix();
-    trunkMesh.setMatrixAt(i, dummy.matrix);
 
-    dummy.position.set(t.x, (1.5 + 1.2) * t.s, t.z);
-    dummy.updateMatrix();
-    leafMeshA.setMatrixAt(i, dummy.matrix);
-    leafMeshA.setColorAt(i, tmpColor.setHex(greens[i % greens.length]));
+  // 按当前 TRACK_POINTS/NORMALS/TRACK_LENGTH 重建全部赛道几何
+  function rebuildTrack() {
+    disposeTrackGroup();
 
-    dummy.position.set(t.x, (1.5 + 2.4) * t.s, t.z);
-    dummy.updateMatrix();
-    leafMeshB.setMatrixAt(i, dummy.matrix);
-    leafMeshB.setColorAt(i, tmpColor.setHex(greens[(i + 1) % greens.length]));
-  });
-  trunkMesh.castShadow = leafMeshA.castShadow = leafMeshB.castShadow = true;
-  scene.add(trunkMesh, leafMeshA, leafMeshB);
+    // 沥青路面
+    const asphalt = new THREE.Mesh(
+      buildRibbon(0, N, { lat: -ROAD_HALF, h: 0.02 }, { lat: ROAD_HALF, h: 0.02 }),
+      new THREE.MeshLambertMaterial({ color: 0x43484f }),
+    );
+    asphalt.receiveShadow = true;
+    trackGroup.add(asphalt);
+
+    // 红白路肩（左右）
+    const curbMat = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide });
+    const curbColor = (i) => (Math.floor(i / 6) % 2
+      ? new THREE.Color(0xe23b3b) : new THREE.Color(0xf4f6f8));
+    for (const s of [1, -1]) {
+      const curb = new THREE.Mesh(
+        buildRibbon(0, N,
+          { lat: s * ROAD_HALF, h: 0.03 }, { lat: s * WALL_HALF, h: 0.045 },
+          { colorFn: curbColor }),
+        curbMat,
+      );
+      curb.receiveShadow = true;
+      trackGroup.add(curb);
+    }
+
+    // 白色边线
+    const lineMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+    for (const s of [1, -1]) {
+      trackGroup.add(new THREE.Mesh(
+        buildRibbon(0, N,
+          { lat: s * (ROAD_HALF - 0.55), h: 0.035 },
+          { lat: s * (ROAD_HALF - 0.18), h: 0.035 }),
+        lineMat,
+      ));
+    }
+
+    // 中央虚线
+    trackGroup.add(new THREE.Mesh(
+      buildDashes({ lat: -0.2, h: 0.035 }, { lat: 0.2, h: 0.035 }, 12, 0.5),
+      lineMat,
+    ));
+
+    // 护栏（白色墙身 + 红色顶栏）
+    const wallMat = new THREE.MeshLambertMaterial({ color: 0xeef2f7, side: THREE.DoubleSide });
+    const railMat = new THREE.MeshLambertMaterial({ color: 0xd7263d, side: THREE.DoubleSide });
+    for (const s of [1, -1]) {
+      const wall = new THREE.Mesh(
+        buildRibbon(0, N, { lat: s * WALL_HALF, h: 0 }, { lat: s * WALL_HALF, h: 1.0 }),
+        wallMat,
+      );
+      wall.castShadow = true;
+      wall.receiveShadow = true;
+      trackGroup.add(wall);
+      trackGroup.add(new THREE.Mesh(
+        buildRibbon(0, N,
+          { lat: s * WALL_HALF, h: 1.0 }, { lat: s * (WALL_HALF + 0.4), h: 1.0 }),
+        railMat,
+      ));
+      // 支柱
+      const postGeo = new THREE.BoxGeometry(0.22, 1.15, 0.22);
+      const postMat = new THREE.MeshLambertMaterial({ color: 0x9aa3ad });
+      for (let i = 0; i < N; i += 15) {
+        const p = TRACK_POINTS[i], n = TRACK_NORMALS[i];
+        const post = new THREE.Mesh(postGeo, postMat);
+        post.position.set(p.x + n.x * s * WALL_HALF, 0.55, p.z + n.z * s * WALL_HALF);
+        post.castShadow = true;
+        trackGroup.add(post);
+      }
+    }
+
+    // 加速带
+    const padMat = new THREE.MeshBasicMaterial({ map: chevronTex, side: THREE.DoubleSide });
+    for (const padT of BOOST_PADS) {
+      const count = Math.max(2, Math.round(2 * BOOST_PAD_HALF_T * N));
+      const iStart = Math.round((padT - BOOST_PAD_HALF_T) * N);
+      const arcLen = 2 * BOOST_PAD_HALF_T * TRACK_LENGTH;
+      const pad = new THREE.Mesh(
+        buildRibbon(iStart, count,
+          { lat: -BOOST_PAD_HALF_LAT, h: 0.05 }, { lat: BOOST_PAD_HALF_LAT, h: 0.05 },
+          { vScale: Math.max(1, Math.round(arcLen / 4)) }),
+        padMat,
+      );
+      trackGroup.add(pad);
+    }
+
+    // 起点线 + 拱门
+    const checker = new THREE.Mesh(
+      buildRibbon(N - 1, 2,
+        { lat: -ROAD_HALF, h: 0.045 }, { lat: ROAD_HALF, h: 0.045 }),
+      new THREE.MeshBasicMaterial({ map: checkerTex }),
+    );
+    trackGroup.add(checker);
+
+    const startS = TRACK_POINTS[0], startN = TRACK_NORMALS[0];
+    const arch = new THREE.Group();
+    arch.position.set(startS.x, 0, startS.z);
+    arch.rotation.y = Math.atan2(-startN.z, startN.x); // 使拱门局部 +X 对齐赛道法线（横跨赛道）
+    const pillarGeo = new THREE.CylinderGeometry(0.55, 0.7, 7, 12);
+    const pillarMat = new THREE.MeshLambertMaterial({ color: 0xf4f6f8 });
+    for (const s of [1, -1]) {
+      const pillar = new THREE.Mesh(pillarGeo, pillarMat);
+      pillar.position.set(s * (WALL_HALF + 1.1), 3.5, 0);
+      pillar.castShadow = true;
+      arch.add(pillar);
+    }
+    const bannerMats = [
+      null, null, null, null,
+      new THREE.MeshBasicMaterial({ map: bannerTex }),
+      new THREE.MeshBasicMaterial({ map: bannerTex }),
+    ];
+    const banner = new THREE.Mesh(new THREE.BoxGeometry(2 * (WALL_HALF + 1.1), 1.9, 0.4), bannerMats);
+    banner.position.y = 7.4;
+    banner.castShadow = true;
+    arch.add(banner);
+    trackGroup.add(arch);
+
+    // 树木（实例化，避开新赛道中心线）
+    const treeSpots = [];
+    let attempts = 0;
+    while (treeSpots.length < 64 && attempts < 600) {
+      attempts++;
+      const x = (Math.random() * 2 - 1) * 700;
+      const z = (Math.random() * 2 - 1) * 700;
+      if (nearest(x, z, -1).dist < 15) continue;
+      treeSpots.push({ x, z, s: 0.8 + Math.random() * 1.1, rot: Math.random() * Math.PI * 2 });
+    }
+    const trunkMesh = new THREE.InstancedMesh(
+      new THREE.CylinderGeometry(0.16, 0.26, 1.5, 7),
+      new THREE.MeshLambertMaterial({ color: 0x7a5230 }),
+      treeSpots.length,
+    );
+    const leafMeshA = new THREE.InstancedMesh(
+      new THREE.ConeGeometry(1.6, 2.4, 8),
+      new THREE.MeshLambertMaterial({ color: 0xffffff }),
+      treeSpots.length,
+    );
+    const leafMeshB = new THREE.InstancedMesh(
+      new THREE.ConeGeometry(1.15, 2.0, 8),
+      new THREE.MeshLambertMaterial({ color: 0xffffff }),
+      treeSpots.length,
+    );
+    const greens = [0x2f8f3a, 0x3aa54a, 0x57b85c, 0x2a9d3f];
+    const tmpColor = new THREE.Color();
+    treeSpots.forEach((t, i) => {
+      dummy.rotation.set(0, t.rot, 0);
+      dummy.position.set(t.x, 0.75 * t.s, t.z);
+      dummy.scale.setScalar(t.s);
+      dummy.updateMatrix();
+      trunkMesh.setMatrixAt(i, dummy.matrix);
+
+      dummy.position.set(t.x, (1.5 + 1.2) * t.s, t.z);
+      dummy.updateMatrix();
+      leafMeshA.setMatrixAt(i, dummy.matrix);
+      leafMeshA.setColorAt(i, tmpColor.setHex(greens[i % greens.length]));
+
+      dummy.position.set(t.x, (1.5 + 2.4) * t.s, t.z);
+      dummy.updateMatrix();
+      leafMeshB.setMatrixAt(i, dummy.matrix);
+      leafMeshB.setColorAt(i, tmpColor.setHex(greens[(i + 1) % greens.length]));
+    });
+    trunkMesh.castShadow = leafMeshA.castShadow = leafMeshB.castShadow = true;
+    trackGroup.add(trunkMesh, leafMeshA, leafMeshB);
+  }
+
+  rebuildTrack();   // 载入默认地图
 
   // ---------- 云朵（实例化，整组慢速旋转） ----------
   const cloudGroup = new THREE.Group();
@@ -427,7 +454,7 @@ export function createWorld(scene, renderer) {
     sunLight.target.updateMatrixWorld();
   }
 
-  return { update, sunLight };
+  return { update, sunLight, rebuildTrack };
 }
 
 // ============================================================

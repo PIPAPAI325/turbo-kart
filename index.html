@@ -36,6 +36,7 @@
   .swatch { width: 44px; height: 44px; border-radius: 50%; border: 3px solid rgba(255,255,255,.35); position: relative; transition: transform .12s; }
   .swatch.sel { border-color: #ffd23f; transform: scale(1.18); box-shadow: 0 0 14px #ffd23f88; }
   #diffRow { display: flex; gap: 10px; }
+  #trackRow { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
   .diff-btn { padding: 8px 22px; border-radius: 12px; background: rgba(255,255,255,.14); color: #cfe6ff; font-size: 16px; font-weight: 700; border: 2px solid transparent; }
   .diff-btn.sel { background: #ffd23f; color: #21365a; border-color: #fff; }
   #startBtn {
@@ -151,6 +152,8 @@
         <button class="diff-btn sel" data-d="1">普通</button>
         <button class="diff-btn" data-d="2">困难</button>
       </div>
+      <h3>选择地图</h3>
+      <div id="trackRow"></div>
     </div>
     <button id="startBtn">开始比赛</button>
     <div class="help">
