@@ -17,3 +17,6 @@ __pycache__/
 Thumbs.db
 .DS_Store
 .vscode/
+
+# 运行时日志（浏览器自动化调试输出）
+debug.log
